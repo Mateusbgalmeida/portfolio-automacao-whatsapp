@@ -1,0 +1,252 @@
+{
+  "name": "Bot Atendimento e Qualificação de Leads - WhatsApp",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-inbound",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4a1a-9001-000000000001",
+      "name": "Webhook - Mensagem Recebida",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-560, 320],
+      "webhookId": "whatsapp-inbound"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "cond-fromme",
+              "leftValue": "={{ $json.body.data.key.fromMe }}",
+              "rightValue": "false",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-4a1a-9001-000000000002",
+      "name": "Ignorar Mensagens Próprias",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-360, 320]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "asg-phone",
+              "name": "telefone",
+              "value": "={{ $json.body.data.key.remoteJid.split('@')[0] }}",
+              "type": "string"
+            },
+            {
+              "id": "asg-nome",
+              "name": "nome_contato",
+              "value": "={{ $json.body.data.pushName || 'Cliente' }}",
+              "type": "string"
+            },
+            {
+              "id": "asg-msg",
+              "name": "mensagem",
+              "value": "={{ $json.body.data.message.conversation || $json.body.data.message.extendedTextMessage.text }}",
+              "type": "string"
+            },
+            {
+              "id": "asg-instance",
+              "name": "instancia",
+              "value": "={{ $json.body.instance }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-4a1a-9001-000000000003",
+      "name": "Extrair Dados da Mensagem",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-140, 240]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, nome, score, resumo, estagio, historico\nFROM leads\nWHERE telefone = '{{ $json.telefone }}'\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-4a1a-9001-000000000004",
+      "name": "Buscar Lead Existente",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [80, 240],
+      "credentials": {
+        "postgres": { "id": "REPLACE_POSTGRES_CRED", "name": "PostgreSQL - CRM" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o\",\n  \"temperature\": 0.4,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Você é o assistente de atendimento da empresa. Objetivos: (1) atender com cordialidade e objetividade, (2) qualificar o lead descobrindo necessidade, urgência e orçamento, (3) nunca inventar preços ou prazos não fornecidos. Responda SEMPRE em JSON com as chaves: resposta (texto a ser enviado ao cliente, máx 3 frases), score (0 a 100 indicando o quão quente é o lead), estagio (um de: novo, qualificando, qualificado, descartado), resumo (1 frase sobre o que o cliente quer). Histórico do lead: {{ $json.historico || 'sem histórico' }}.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"{{ $('Extrair Dados da Mensagem').item.json.mensagem }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0005-4a1a-9001-000000000005",
+      "name": "Agente IA - GPT-4o",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [300, 240],
+      "credentials": {
+        "httpHeaderAuth": { "id": "REPLACE_OPENAI_CRED", "name": "OpenAI - Bearer" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.choices[0].message.content;\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (e) {\n  parsed = { resposta: 'Recebi sua mensagem, já te respondo.', score: 0, estagio: 'novo', resumo: 'erro de parse' };\n}\nconst ctx = $('Extrair Dados da Mensagem').item.json;\nreturn [{\n  json: {\n    telefone: ctx.telefone,\n    nome_contato: ctx.nome_contato,\n    instancia: ctx.instancia,\n    mensagem_cliente: ctx.mensagem,\n    resposta: parsed.resposta,\n    score: parsed.score,\n    estagio: parsed.estagio,\n    resumo: parsed.resumo\n  }\n}];"
+      },
+      "id": "a1b2c3d4-0006-4a1a-9001-000000000006",
+      "name": "Parse Resposta IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 240]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO leads (telefone, nome, score, resumo, estagio, historico, atualizado_em)\nVALUES ('{{ $json.telefone }}', '{{ $json.nome_contato }}', {{ $json.score }}, '{{ $json.resumo }}', '{{ $json.estagio }}', '{{ $json.mensagem_cliente }}', NOW())\nON CONFLICT (telefone) DO UPDATE SET\n  score = EXCLUDED.score,\n  resumo = EXCLUDED.resumo,\n  estagio = EXCLUDED.estagio,\n  historico = leads.historico || ' | ' || EXCLUDED.historico,\n  atualizado_em = NOW();",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0007-4a1a-9001-000000000007",
+      "name": "Salvar / Atualizar Lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [740, 240],
+      "credentials": {
+        "postgres": { "id": "REPLACE_POSTGRES_CRED", "name": "PostgreSQL - CRM" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://SUA-EVOLUTION-API.com/message/sendText/{{ $('Parse Resposta IA').item.json.instancia }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $('Parse Resposta IA').item.json.telefone }}\",\n  \"text\": \"{{ $('Parse Resposta IA').item.json.resposta }}\"\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0008-4a1a-9001-000000000008",
+      "name": "Responder Cliente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 240],
+      "credentials": {
+        "httpHeaderAuth": { "id": "REPLACE_EVOLUTION_CRED", "name": "Evolution API - apikey" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "cond-score",
+              "leftValue": "={{ $json.score }}",
+              "rightValue": 70,
+              "operator": { "type": "number", "operation": "gte" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0009-4a1a-9001-000000000009",
+      "name": "Lead Qualificado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [740, 460]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://SUA-EVOLUTION-API.com/message/sendText/{{ $json.instancia }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"55SEU_NUMERO_VENDEDOR\",\n  \"text\": \"🔥 LEAD QUENTE (score {{ $json.score }})\\nNome: {{ $json.nome_contato }}\\nTelefone: {{ $json.telefone }}\\nResumo: {{ $json.resumo }}\"\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0010-4a1a-9001-000000000010",
+      "name": "Notificar Vendedor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 460],
+      "credentials": {
+        "httpHeaderAuth": { "id": "REPLACE_EVOLUTION_CRED", "name": "Evolution API - apikey" }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook - Mensagem Recebida": {
+      "main": [[{ "node": "Ignorar Mensagens Próprias", "type": "main", "index": 0 }]]
+    },
+    "Ignorar Mensagens Próprias": {
+      "main": [[{ "node": "Extrair Dados da Mensagem", "type": "main", "index": 0 }], []]
+    },
+    "Extrair Dados da Mensagem": {
+      "main": [[{ "node": "Buscar Lead Existente", "type": "main", "index": 0 }]]
+    },
+    "Buscar Lead Existente": {
+      "main": [[{ "node": "Agente IA - GPT-4o", "type": "main", "index": 0 }]]
+    },
+    "Agente IA - GPT-4o": {
+      "main": [[{ "node": "Parse Resposta IA", "type": "main", "index": 0 }]]
+    },
+    "Parse Resposta IA": {
+      "main": [[
+        { "node": "Salvar / Atualizar Lead", "type": "main", "index": 0 },
+        { "node": "Lead Qualificado?", "type": "main", "index": 0 }
+      ]]
+    },
+    "Salvar / Atualizar Lead": {
+      "main": [[{ "node": "Responder Cliente", "type": "main", "index": 0 }]]
+    },
+    "Lead Qualificado?": {
+      "main": [[{ "node": "Notificar Vendedor", "type": "main", "index": 0 }], []]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false,
+  "pinData": {},
+  "tags": [{ "name": "WhatsApp" }, { "name": "IA" }, { "name": "Qualificação" }]
+}
